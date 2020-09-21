@@ -3,13 +3,21 @@ module Globalize
     module ClassMethods
       delegate :translated_locales, :set_translations_table_name, :to => :translation_class
 
+      if ::ActiveRecord::VERSION::STRING < "5.0.0"
+        def columns_hash
+          super.except(*translated_attribute_names.map(&:to_s))
+        end
+      end
+
       def with_locales(*locales)
         all.merge translation_class.with_locales(*locales)
       end
 
       def with_translations(*locales)
         locales = translated_locales if locales.empty?
-        preload(:translations).joins(:translations).readonly(false).with_locales(locales)
+        preload(:translations).joins(:translations).readonly(false).with_locales(locales).tap do |query|
+          query.distinct! unless locales.flatten.one?
+        end
       end
 
       def with_required_attributes
@@ -48,7 +56,11 @@ module Globalize
             klass = self.const_set(:Translation, Class.new(Globalize::ActiveRecord::Translation))
           end
 
-          klass.belongs_to :globalized_model, :class_name => self.name, :foreign_key => translation_options[:foreign_key]
+          klass.belongs_to :globalized_model,
+            class_name: self.name,
+            foreign_key: translation_options[:foreign_key],
+            inverse_of: :translations,
+            touch: translation_options.fetch(:touch, false)
           klass
         end
       end
@@ -64,10 +76,10 @@ module Globalize
       private
 
       # Override the default relation method in order to return a subclass
-      # of ActiveRecord::Relation with custom finder methods for translated
-      # attributes.
+      # of ActiveRecord::Relation with custom finder and calculation methods
+      # for translated attributes.
       def relation
-        super.extending!(QueryMethods)
+        super.extending!(TranslatedAttributesQuery)
       end
 
       protected
@@ -86,6 +98,7 @@ module Globalize
       end
 
       def define_translated_attr_accessor(name)
+        attribute(name, ::ActiveRecord::Type::Value.new)
         define_translated_attr_reader(name)
         define_translated_attr_writer(name)
       end
@@ -101,8 +114,8 @@ module Globalize
 
       def define_translations_writer(name)
         define_method(:"#{name}_translations=") do |value|
-          value.each do |(locale, value)|
-            write_attribute name, value, :locale => locale
+          value.each do |(locale, _value)|
+            write_attribute name, _value, :locale => locale
           end
         end
       end

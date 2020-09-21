@@ -45,6 +45,27 @@ class GlobalizeTest < MiniTest::Spec
         assert_translated post, :de, :title, 'Titel'
         assert_translated post, :en, :title, 'title'
       end
+
+      it "bug with same translations" do
+        post = Post.create(:title => 'Titel')
+        post.attributes = { :title => 'Titel', :locale => :de }
+        post.attributes = { :title => 'title', :locale => :en }
+        post.save
+        post.reload
+
+        assert_equal 2, post.translations.size
+        assert_translated post, :de, :title, 'Titel'
+        assert_translated post, :en, :title, 'title'
+
+        post.attributes = { :title => 'title', :locale => :de }
+        post.attributes = { :title => 'Titel', :locale => :en }
+        post.save
+        post.reload
+
+        assert_equal 2, post.translations.size
+        assert_translated post, :de, :title, 'title'
+        assert_translated post, :en, :title, 'Titel'
+      end
     end
 
     describe 'associations' do
@@ -84,6 +105,26 @@ class GlobalizeTest < MiniTest::Spec
         assert_translated post, :en, :title, 'title'
         assert_translated post, :de, :title, 'Titel'
       end
+
+      it "does not add tralations if no words changed" do
+        product = with_locale(:en) { Product.create(:name => 'name') }
+        with_locale(:de) { product.update_attributes(:updated_at => Time.now) }
+
+        assert_equal 1, product.reload.translations.size
+      end
+    end
+
+    describe '#write_attribute' do
+      it "saves translations record for locale passed in" do
+        post = Post.create(:title => 'title', :locale => :de)
+        post.update_attributes(:title => 'title', :locale => :en)
+
+        post.reload
+
+        post.write_attribute :title, 'Titel', :locale => :de
+        post.write_attribute :title, 'title', :locale => :en
+        assert_equal true, post.changed.include?('title')
+      end
     end
 
     describe '#reload' do
@@ -121,18 +162,20 @@ class GlobalizeTest < MiniTest::Spec
       end
     end
 
-    describe '#to_xml' do
-      it "includes translated fields" do
-        post = Post.create(:title => "foo", :content => "bar")
-        post.reload
-        assert post.to_xml =~ %r(<title>foo</title>)
-        assert post.to_xml =~ %r(<content>bar</content>)
-      end
+    if defined?(ActiveRecord::XmlSerializer)
+      describe '#to_xml' do
+        it "includes translated fields" do
+          post = Post.create(:title => "foo", :content => "bar")
+          post.reload
+          assert post.to_xml =~ %r(<title>foo</title>)
+          assert post.to_xml =~ %r(<content>bar</content>)
+        end
 
-      it "doesn't affect untranslated models" do
-        blog = Blog.create(:description => "my blog")
-        blog.reload
-        assert blog.to_xml =~ %r(<description>my blog</description>)
+        it "doesn't affect untranslated models" do
+          blog = Blog.create(:description => "my blog")
+          blog.reload
+          assert blog.to_xml =~ %r(<description>my blog</description>)
+        end
       end
     end
 
@@ -191,7 +234,7 @@ class GlobalizeTest < MiniTest::Spec
         Post.create(:title => 'title 2')
 
         assert Post.with_translations.first.translations.loaded?
-        assert_equal ['title 1', 'title 2'], Post.with_translations.map(&:title)
+        assert_equal ['title 1', 'title 2'], Post.with_translations.map(&:title).sort
       end
     end
 
@@ -215,6 +258,32 @@ class GlobalizeTest < MiniTest::Spec
           assert_translated m, :en, :name, 'Name'
         end
       end
+    end
+  end
+
+  describe '#with_locale' do
+    def perform_with_locale(locale)
+      Thread.new do
+        Globalize.with_locale(locale) do
+          Thread.pass
+          assert_equal locale, Globalize.locale
+        end
+      end
+    end
+
+    it 'sets locale in a single thread' do
+      perform_with_locale(:end).join
+    end
+
+    it 'sets independent locales in multiple threads' do
+      threads = []
+      threads << perform_with_locale(:en)
+      threads << perform_with_locale(:fr)
+      threads << perform_with_locale(:de)
+      threads << perform_with_locale(:cz)
+      threads << perform_with_locale(:pl)
+
+      threads.each(&:join)
     end
   end
 end
